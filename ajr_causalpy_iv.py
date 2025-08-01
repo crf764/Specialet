@@ -2,25 +2,7 @@
 ajr_causalpy_iv.py  •  Bayesian IV identical to CausalPy notebook
 ================================================================
 Fits Acemoglu, Johnson & Robinson (2001) Colonial Origins data with
-CausalPy's `InstrumentalVariableRegression` (sampling happens when the
-object is instantiated).  After sampling it draws **posterior‑predictive**
-replicates using *PyMC 5's* current API and saves the complete
-`InferenceData`—posterior **plus** PPC—to a NetCDF file so you never need
-to rerun MCMC unless you change hyper‑parameters.
-
-Usage
------
-```python
-import ajr_causalpy_iv as ajr
-iv, idata = ajr.run(draws=3000, baseline_only=True)
-
-# Posterior predictive check
-import arviz as az
-az.plot_ppc(idata, data_pairs={"logpgp95": "logpgp95"});
-
-# Later:
-idata = az.from_netcdf("ajr_iv_posterior.nc")
-```
+CausalPy's `InstrumentalVariableRegression`.
 """
 
 from __future__ import annotations
@@ -33,97 +15,81 @@ import causalpy as cp
 from causalpy.pymc_models import InstrumentalVariableRegression
 import pymc as pm
 
-# ---------------------------------------------------------------------------
-# Default .dta location 
-# ---------------------------------------------------------------------------
-DATA_PATH = Path(
-    r"C:\Users\B375471\Downloads\Acemoglu_osv\colonial_origins\maketable4\maketable4.dta"
-)
 
-# ---------------------------------------------------------------------------
-# Helper: load data and mirror maketable4.do tweaks
-# ---------------------------------------------------------------------------
-
-def _load_data(path: Union[str, Path], baseline_only: bool = True) -> pd.DataFrame:
-    """Read AJR data and replicate Stata‑side transformations."""
+def load_ajr_data(path: str, baseline_only: bool = True) -> pd.DataFrame:
+    """Load AJR data with exact filtering logic."""
     df = pd.read_stata(path)
-
-    # Extra continent dummy (AUS, MLT, NZL)
+    
+    print(f"Original dataset size: {len(df)}")
+    
+    # Step 1: Create other_cont dummy if needed
     if "other_cont" not in df.columns and "shortnam" in df.columns:
         df["other_cont"] = 0
         df.loc[df["shortnam"].isin(["AUS", "MLT", "NZL"]), "other_cont"] = 1
-
-    # Baseline colonies (baseco == 1) if requested
+    
+    # Step 2: Filter to baseline colonies only (baseco == 1)
     if baseline_only and "baseco" in df.columns:
         df = df[df["baseco"] == 1]
-
-    if df.empty:
-        raise ValueError("No rows left after filtering—check path or flags.")
-    return df.reset_index(drop=True)
-
-# ---------------------------------------------------------------------------
-# Main function to run Bayesian IV
-# ---------------------------------------------------------------------------
+        print(f"After baseco == 1 filter: {len(df)}")
+    
+    # Step 3: Drop missing values for required variables
+    df = df.dropna(subset=['logem4', 'logpgp95', 'avexpr'])
+    print(f"After dropna: {len(df)} observations")
+    
+    # Reset index
+    df = df.reset_index(drop=True)
+    return df
 
 def run(
     *,
-    data_path: Union[str, Path] = DATA_PATH,
+    data: pd.DataFrame,  # Pre-processed data passed from notebook
     draws: int = 2_000,
     tune: int = 1_000,
     chains: int = 4,
     cores: int = 4,
-    baseline_only: bool = True,
     target_accept: float = 0.9,
     random_seed: int | None = 42,
-    ppc_draws: int | None = None,   # None → one PPC draw per posterior draw
+    ppc_draws: int | None = None,
     netcdf_path: Union[str, Path] = "ajr_iv_posterior.nc",
-    covariates: list[str] | None = None,  # exogenous controls
+    covariates: list[str] | None = None,
+    priors: dict | None = None,
 ):
-    """Run Bayesian IV and return `(iv_object, inference_data)`.
+    """Run Bayesian IV on pre-processed data.
 
     Parameters
     ----------
+    data : pd.DataFrame
+        Pre-processed dataframe with required variables: logem4, avexpr, logpgp95
     covariates : list[str] | None
-        Exogenous control variables to include in both first-stage and 
-        structural equations. E.g., ['africa', 'asia'] for continent dummies.
-    ppc_draws : int | None 
-        If not None, only the first `ppc_draws` posterior draws are used 
-        to generate posterior‑predictive replicates to speed up PPC.
-    
-    Returns
-    -------
-    tuple[cp.InstrumentalVariable, az.InferenceData]
-        The fitted IV object and complete inference data with posterior + PPC.
+        Exogenous control variables to include in both equations
     """
-
-    # 1  Load & prepare data --------------------------------------------------
-    df = _load_data(data_path, baseline_only)
     
     # Handle covariates
     if covariates is None:
         covariates = []
     
-    # Validate that covariates exist in the data
-    missing_covs = [cov for cov in covariates if cov not in df.columns]
-    if missing_covs:
-        raise ValueError(f"Covariates not found in data: {missing_covs}")
+    # Validate that required variables exist
+    required_vars = ["logem4", "avexpr", "logpgp95"] + covariates
+    missing_vars = [var for var in required_vars if var not in data.columns]
+    if missing_vars:
+        raise ValueError(f"Required variables not found in data: {missing_vars}")
 
     # Build formulas with covariates
     covariate_terms = " + ".join(covariates) if covariates else ""
     
     if covariate_terms:
-        instruments_formula = f"avexpr ~ 1 + logem4 + {covariate_terms}"  # first stage
-        formula = f"logpgp95 ~ 1 + avexpr + {covariate_terms}"  # structural equation
+        instruments_formula = f"avexpr ~ 1 + logem4 + {covariate_terms}"
+        formula = f"logpgp95 ~ 1 + avexpr + {covariate_terms}"
     else:
-        instruments_formula = "avexpr ~ 1 + logem4"  # first stage
-        formula = "logpgp95 ~ 1 + avexpr"  # structural equation
+        instruments_formula = "avexpr ~ 1 + logem4"
+        formula = "logpgp95 ~ 1 + avexpr"
 
-    # Prepare data matrices with required variables
+    # Prepare data matrices
     required_vars_instruments = ["avexpr", "logem4"] + covariates
     required_vars_structural = ["logpgp95", "avexpr"] + covariates
     
-    instruments_data = df[required_vars_instruments]
-    data = df[required_vars_structural]
+    instruments_data = data[required_vars_instruments]
+    structural_data = data[required_vars_structural]
 
     sample_kwargs = dict(
         draws=draws,
@@ -134,34 +100,33 @@ def run(
         random_seed=random_seed,
     )
 
-    # 2  Instantiate InstrumentalVariable — sampling happens internally -------
+    # Instantiate InstrumentalVariable
     iv = cp.InstrumentalVariable(
         instruments_data=instruments_data,
-        data=data,
+        data=structural_data,
         instruments_formula=instruments_formula,
         formula=formula,
         model=InstrumentalVariableRegression(sample_kwargs=sample_kwargs),
+        priors=priors,
     )
 
-    idata = iv.model.idata  # posterior now in memory
+    idata = iv.model.idata
 
-    # 3  Posterior‑predictive draws via PyMC v5 API ---------------------------
-    #    Docs: https://www.pymc.io/projects/docs/en/stable/api/generated/pymc.sample_posterior_predictive.html
+    # Posterior predictive draws
     if ppc_draws is not None and ppc_draws < idata.posterior.sizes["draw"]:
         idata_subset = idata.sel(draw=slice(0, ppc_draws))
     else:
         idata_subset = idata
 
     ppc_idata = pm.sample_posterior_predictive(
-        model=iv.model,  # underlying PyMC graph
+        model=iv.model,
         trace=idata,
         random_seed=random_seed,
         extend_inferencedata=True,
     )
 
-    # 4  Save and return ------------------------------------------------------
+    # Save results
     idata.to_netcdf(netcdf_path)
-
     print(az.summary(idata, var_names=["beta_z", "beta_t"], round_to=3))
     print(f"\nPosterior + PPC saved to → {netcdf_path}")
 
@@ -172,8 +137,7 @@ def run(
 # Additional helper functions for covariates exploration
 # ---------------------------------------------------------------------------
 
-def get_available_covariates(data_path: Union[str, Path] = DATA_PATH, 
-                           baseline_only: bool = True) -> list[str]:
+def get_available_covariates(data: pd.DataFrame) -> list[str]:
     """Get list of potential covariate columns in the AJR dataset.
     
     Returns
@@ -181,8 +145,7 @@ def get_available_covariates(data_path: Union[str, Path] = DATA_PATH,
     list[str]
         Available column names that could be used as covariates.
     """
-    df = _load_data(data_path, baseline_only)
-    
+    df = data
     # Exclude the main variables of interest
     excluded = {"logpgp95", "avexpr", "logem4", "baseco", "shortnam"}
     
