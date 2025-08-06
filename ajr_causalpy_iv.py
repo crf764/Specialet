@@ -48,6 +48,7 @@ def run(
     chains: int = 4,
     cores: int = 4,
     target_accept: float = 0.9,
+    loosen_exclusion: bool = False,
     random_seed: int | None = 42,
     ppc_draws: int | None = None,
     netcdf_path: Union[str, Path] = "ajr_iv_posterior.nc",
@@ -77,16 +78,20 @@ def run(
     # Build formulas with covariates
     covariate_terms = " + ".join(covariates) if covariates else ""
     
+    
+    instruments_formula = "avexpr ~ 1 + logem4" + (f" + {covariate_terms}" if covariate_terms else "")
+    structural_formula = "logpgp95 ~ 1 + avexpr"
+    if loosen_exclusion:
+        structural_formula += " + logem4"  # Allow logem4 in structural equation if loosen_exclusion is True
     if covariate_terms:
-        instruments_formula = f"avexpr ~ 1 + logem4 + {covariate_terms}"
-        formula = f"logpgp95 ~ 1 + avexpr + {covariate_terms}"
-    else:
-        instruments_formula = "avexpr ~ 1 + logem4"
-        formula = "logpgp95 ~ 1 + avexpr"
+        structural_formula += f" + {covariate_terms}"
+
 
     # Prepare data matrices
     required_vars_instruments = ["avexpr", "logem4"] + covariates
     required_vars_structural = ["logpgp95", "avexpr"] + covariates
+    if loosen_exclusion:
+        required_vars_structural.append("logem4")
     
     instruments_data = data[required_vars_instruments]
     structural_data = data[required_vars_structural]
@@ -105,7 +110,7 @@ def run(
         instruments_data=instruments_data,
         data=structural_data,
         instruments_formula=instruments_formula,
-        formula=formula,
+        formula=structural_formula,
         model=InstrumentalVariableRegression(sample_kwargs=sample_kwargs),
         priors=priors,
     )
@@ -153,5 +158,48 @@ def get_available_covariates(data: pd.DataFrame) -> list[str]:
     potential_covs = [col for col in df.columns if col not in excluded]
     
     return sorted(potential_covs)
+
+def prior_sensitivity(
+    scenarios: List[Dict],
+    *,
+    data: pd.DataFrame,
+    covariates: List[str] | None = None,
+    baseline_only: bool = True,
+    draws: int = 1_000,
+    tune: int = 1_000,
+    chains: int = 4,
+    cores: int = 4,
+    target_accept: float = 0.9,
+    random_seed: int | None = 42,
+    out_dir: Union[str, Path] = "prior_sensitivity_runs",
+) -> List[az.InferenceData]:
+    """Fit the model under multiple prior dictionaries.
+
+    Each dict **must** contain a key `"__label__"` for naming.
+    """
+    Path(out_dir).mkdir(parents=True, exist_ok=True)
+    idatas: List[az.InferenceData] = []
+
+    for scen in scenarios:
+        label = scen.pop("__label__", "scenario")
+        print(f"\n— Prior scenario: {label} —")
+        idata = run(
+            data=data,
+            priors=scen,
+            covariates=covariates,
+            baseline_only=baseline_only,
+            draws=draws,
+            tune=tune,
+            chains=chains,
+            cores=cores,
+            target_accept=target_accept,
+            random_seed=random_seed,
+            netcdf_path=Path(out_dir) / f"ajr_iv_{label}.nc",
+        )[1]  # second element is idata
+
+        idata.attrs["label"] = label
+        idatas.append(idata)
+
+    return idatas
 
 
