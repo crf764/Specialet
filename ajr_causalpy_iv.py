@@ -79,12 +79,19 @@ def run(
     covariate_terms = " + ".join(covariates) if covariates else ""
     
     
-    instruments_formula = "avexpr ~ 1 + logem4" + (f" + {covariate_terms}" if covariate_terms else "")
+    if covariate_terms:
+        instruments_formula = f"avexpr ~ 1 + {covariate_terms} + logem4"
+    else:
+        instruments_formula = "avexpr ~ 1 + logem4"
     structural_formula = "logpgp95 ~ 1 + avexpr"
-    if loosen_exclusion:
-        structural_formula += " + logem4"  # Allow logem4 in structural equation if loosen_exclusion is True
     if covariate_terms:
         structural_formula += f" + {covariate_terms}"
+    if loosen_exclusion:
+        structural_formula += " + logem4"  # logem4 LAST
+
+    print(f"First-stage formula: {instruments_formula}")
+    print(f"Structural formula: {structural_formula}")
+
 
 
     # Prepare data matrices
