@@ -4,41 +4,62 @@ ajr_causalpy_iv.py  •  Bayesian IV identical to CausalPy notebook
 Fits Acemoglu, Johnson & Robinson (2001) Colonial Origins data with
 CausalPy's `InstrumentalVariableRegression`.
 """
-
 from __future__ import annotations
+import numpy as np
 from pathlib import Path
 from typing import Union
-
+import xarray as xr
 import arviz as az
 import pandas as pd
 import causalpy as cp
-from causalpy.pymc_models import InstrumentalVariableRegression
+from bayesianiv import InstrumentalVariableRegression
 import pymc as pm
 
 
-def load_ajr_data(path: str, baseline_only: bool = True) -> pd.DataFrame:
-    """Load AJR data with exact filtering logic."""
+
+def load_ajr_data(path: str, baseline_only: bool = True, standardize: bool = False):
+    """Load AJR data with exact filtering logic, optionally standardize variables."""
     df = pd.read_stata(path)
-    
     print(f"Original dataset size: {len(df)}")
-    
+
     # Step 1: Create other_cont dummy if needed
     if "other_cont" not in df.columns and "shortnam" in df.columns:
         df["other_cont"] = 0
         df.loc[df["shortnam"].isin(["AUS", "MLT", "NZL"]), "other_cont"] = 1
-    
+
     # Step 2: Filter to baseline colonies only (baseco == 1)
     if baseline_only and "baseco" in df.columns:
         df = df[df["baseco"] == 1]
         print(f"After baseco == 1 filter: {len(df)}")
-    
+
     # Step 3: Drop missing values for required variables
-    df = df.dropna(subset=['logem4', 'logpgp95', 'avexpr'])
+    df = df.dropna(subset=["logem4", "logpgp95", "avexpr"])
     print(f"After dropna: {len(df)} observations")
-    
-    # Reset index
+
+    # Step 4: Optionally standardize
+    stats = {}
+    if standardize:
+        for var in ["logem4", "avexpr", "logpgp95"]:
+            mean_ = df[var].mean()
+            std_ = df[var].std(ddof=0)
+            stats[var] = {"mean": mean_, "std": std_}
+
+        # Standardize predictors
+        df["logem4"] = (df["logem4"] - stats["logem4"]["mean"]) / stats["logem4"]["std"]
+        df["avexpr"] = (df["avexpr"] - stats["avexpr"]["mean"]) / stats["avexpr"]["std"]
+
+        # Center outcome (not scale)
+        df["logpgp95"] = df["logpgp95"] - stats["logpgp95"]["mean"]
+
+        print("Variables standardized (predictors) and centered (outcome).")
+
+    # Step 5: Reset index
     df = df.reset_index(drop=True)
-    return df
+
+    if standardize:
+        return df, stats
+    else:
+        return df
 
 def run(
     *,
@@ -54,6 +75,8 @@ def run(
     netcdf_path: Union[str, Path] = "ajr_iv_posterior.nc",
     covariates: list[str] | None = None,
     priors: dict | None = None,
+    standardize: bool = False,
+    stats: dict | None = None,
 ):
     """Run Bayesian IV on pre-processed data.
 
@@ -137,16 +160,25 @@ def run(
         extend_inferencedata=True,
     )
 
-    # Save results
+    
+    # Save results 
+   
+
+    if standardize:
+        idata = backtransform_posterior(idata, stats)
+        print("Posterior coefficients back-transformed to original units.")
+
     idata.to_netcdf(netcdf_path)
-    print(az.summary(idata, var_names=["beta_z", "beta_t"], round_to=3))
+    print(az.summary(idata, var_names=["beta_z", "beta_t"], hdi_prob=0.95, round_to=3))
+    if standardize:
+        print(az.summary(idata, var_names=["beta_orig", "delta_orig", "intercept_orig"], hdi_prob=0.95, round_to=3))
     print(f"\nPosterior + PPC saved to → {netcdf_path}")
 
     return iv, idata
 
 
 # ---------------------------------------------------------------------------
-# Additional helper functions for covariates exploration
+# Additional helper functions 
 # ---------------------------------------------------------------------------
 
 def get_available_covariates(data: pd.DataFrame) -> list[str]:
@@ -210,3 +242,37 @@ def prior_sensitivity(
     return idatas
 
 
+
+
+
+def backtransform_posterior(idata: az.InferenceData, stats: dict) -> az.InferenceData:
+    post = idata.posterior
+
+    # scales
+    s_t = stats["avexpr"]["std"]
+    s_z = stats["logem4"]["std"]
+    m_t = stats["avexpr"]["mean"]
+    m_y = stats["logpgp95"]["mean"]
+    m_z = stats["logem4"]["mean"]
+
+    covar_names = post["beta_z"].coords["covariates"].values
+    instr_names = post["beta_t"].coords["instruments"].values
+    idx_treat = int(np.where(covar_names == "avexpr")[0][0])
+    idx_delta = int(np.where(covar_names == "logem4")[0][0])
+
+    beta_std  = post["beta_z"].isel(covariates=idx_treat)
+    delta_std = post["beta_z"].isel(covariates=idx_delta)
+    intercept_std = post["beta_z"].sel(covariates="Intercept")
+
+    beta_orig  = beta_std  * (1.0 / s_t)
+    delta_orig = delta_std * (1.0 / s_z)
+    intercept_orig = m_y - beta_orig * m_t - delta_orig * m_z
+
+    
+    idata_bt = idata.copy()
+    idata_bt.posterior = idata_bt.posterior.assign(
+        beta_orig=beta_orig,
+        delta_orig=delta_orig,
+        intercept_orig=intercept_orig,
+    )
+    return idata_bt
