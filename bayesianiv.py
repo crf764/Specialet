@@ -87,7 +87,22 @@ class InstrumentalVariableRegression(PyMCModel):
             beta_t = pm.Normal("beta_t", mu=mus_t, sigma=sig_t, dims="instruments")
 
             # base beta_z as in the original model
-            beta_z_raw = pm.Normal("beta_z_raw", mu=mus_z, sigma=sig_z, dims="covariates")
+            if priors.get("use_truncation", False):
+                beta_z_raw = pm.TruncatedNormal(
+                    "beta_z_raw",
+                    mu=mus_z,
+                    sigma=sig_z,
+                    lower=0.0,
+                    dims="covariates",
+                )
+            else:
+                beta_z_raw = pm.Normal(
+                    "beta_z_raw",
+                    mu=mus_z,
+                    sigma=sig_z,
+                    dims="covariates",
+                )
+
 
             # ---------- Optional conditional prior δ|β ----------
             S_val = priors.get("S", None)

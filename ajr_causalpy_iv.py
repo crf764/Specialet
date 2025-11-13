@@ -1,5 +1,5 @@
 """
-ajr_causalpy_iv.py  •  Bayesian IV identical to CausalPy notebook
+ajr_causalpy_iv.py  •  Bayesian IV CausalPy implementation for Plausibly Exogenous estimation 
 ================================================================
 Fits Acemoglu, Johnson & Robinson (2001) Colonial Origins data with
 CausalPy's `InstrumentalVariableRegression`.
@@ -110,7 +110,7 @@ def run(
     if covariate_terms:
         structural_formula += f" + {covariate_terms}"
     if loosen_exclusion:
-        structural_formula += " + logem4"  # logem4 LAST
+        structural_formula += " + logem4"  
 
     print(f"First-stage formula: {instruments_formula}")
     print(f"Structural formula: {structural_formula}")
