@@ -1,0 +1,1 @@
+OK: ran gIVBMA on bace_acemoglu with 1 endog; iters=10000, burn=2000
