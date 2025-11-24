@@ -12,4 +12,4 @@ Stata/plausexog1.do producerer LTZ graf
 
 Stata/firststagezero.do producerer First Stage Zero test
 
-Stata/acemolgurep.do reproducerer table 4, Acemoglu et. al (2001) fra appendix
+Stata/acemolgurep.do reproducerer table 4, Acemoglu et. al (2001) (i appendix)
