@@ -1,1 +1,0 @@
-OK: ran gIVBMA on acemoglu64 with 1 endog; iters=10000, burn=2000
